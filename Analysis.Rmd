@@ -1,0 +1,1202 @@
+---
+title: "TCM: Data Preparation and Analysis"
+date: "23rd December 2021"
+author: "Fabian Dablander"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE, eval = TRUE,
+  fig.align = 'center', fig.width = 10, fig.height = 6, dpi = 400
+)
+```
+
+# Introduction
+This is the online supplementary to the paper "Traditional Chinese Medicine: A Bayesian network model of public awareness, usage determinants, and perception of scientific support in Austria" by Eigenschink, Bellach, Leonard, Dablander, Maier, Dablander, and Sitte. It includes the code and data to fully reproduce the results.
+
+# Data Preparation
+We load the data, which holds 1382 participants.
+
+```{r}
+library('dplyr')
+library('readr')
+library('tidyr')
+library('kableExtra')
+
+dat_raw <- read_delim('Data/dat.csv', delim = ';', skip = 1, na = c('', 'NA', -9))
+
+dat1 <- dat_raw %>% 
+  mutate(
+    malus = as.numeric(gsub(',', '.', malus)),
+    age = as.numeric(age),
+    age = ifelse(age == 1994, 2020 - 1994, age),
+    age = ifelse(age == '60 Jahre', 60, age),
+    age = ifelse(age == 'Sechzig', 60, age),
+    age = ifelse(age == '50 plus', 50, age),
+  )
+
+dim(dat1)
+```
+
+## Data Exclusion
+We select only the relevant variables. 
+```{r}
+relevant_variables <- c(
+  'obtained', 'gender', 'age', 'education', 'employement',
+  'income', 'disease', 'tcm_known', 'tcm_use', 'tcm_frequency', 'tcm_science', 'tcm_trust',
+  'med_money', 'tcm_money', 'tcm_moneyrel', 'globuli_use', 'globuli_pass', 'vax_use',
+  'vax_fresh', 'needle_use', 'needle_frequency', 'type'
+)
+
+dat_relevant <- select(dat1, all_of(relevant_variables))
+```
+
+There are 9 participants who had NAs for all relevant variables. We remove these participants.
+
+```{r}
+index_all_na <- which(apply(select(dat_relevant, -type), 1, function(x) all(is.na(x))))
+length(index_all_na)
+
+dat2 <- dat1[-index_all_na, ]
+```
+
+We also exclude those that indicated NA in some of the demographic variables, including education, employement, and income. This excluded 44 participants.
+
+```{r}
+demographics <- c('gender', 'age', 'education', 'employement', 'income')
+
+dat3 <- dat2 %>% 
+  drop_na(demographics)
+
+nrow(dat2) - nrow(dat3)
+```
+
+For simplicity, we remove anybody who indicates "other" for gender (4 observations). Similarly, we remove somebody who indicated "-" as his/her age. This removes 4 participants.
+
+```{r}
+dat4 <- filter(dat3, age != '-', gender != 3)
+nrow(dat3) - nrow(dat4)
+```
+
+Finally, we remove participants that have answered the online survey unreasonably quickly. We do this by removing participants with a *malus* score of 2 or higher (or those that had NA). This excludes 7 participants.
+
+```{r}
+dat5 <- filter(dat4, !is.na(malus), !(type == 2 & malus > 2))
+nrow(dat4) - nrow(dat5)
+```
+
+We remove those particicpants that have _type_ = 'street' yet have no _obtained_ = 1.
+
+```{r}
+dat <- dat5 %>% filter(!(type == 1 & obtained != 1))
+
+nrow(dat5) - nrow(dat)
+```
+
+In total, we have excluded 75 participants.
+
+```{r}
+nrow(dat_raw) - nrow(dat)
+```
+
+# Descriptives
+In this section, we will visualize and describe the sample. Here are some descriptive statistics we report in the main text.
+
+```{r}
+# Get age and education statistics
+dat %>%
+  group_by(gender) %>%
+  summarize(
+    n = n(),
+    age_m = mean(age),
+    age_sd = sd(age),
+    edu_norm = mean(education >= 6)
+  )
+
+# Get income statistics
+dat %>%
+  filter(income != 12) %>% 
+  group_by(gender) %>%
+  summarize(
+    n = n(),
+    inc_norm = mean(income >= 7)
+  )
+
+# Get disease statistics
+dat %>%
+  filter(!is.na(disease)) %>% 
+  group_by(gender) %>%
+  summarize(
+    n = n(),
+    disease = mean(2 - disease)
+  )
+
+# 'Gesamtzeit Fragebogen' according to the codebook
+dat %>%
+  group_by(type) %>% 
+  summarize(
+    time = median(time_total)
+  )
+```
+
+## Demographic Variables
+We first visualise the age, education, and income distribution across gender.
+
+```{r, fig.width = 10, fig.height = 8}
+library('ggplot2')
+library('gridExtra')
+library('RColorBrewer')
+
+# Easy to change colours
+cols <- brewer.pal(3, 'Set1')[-2]
+cols <- rev(ggsci::pal_jco(alpha = 0.60)(2))
+
+custom_theme <- theme_minimal() +
+  theme(
+    legend.position = 'top',
+    axis.ticks.y = element_blank(),
+    panel.border = element_blank(),
+    panel.spacing.x = unit(1, 'lines'),
+    panel.spacing.y = unit(1, 'lines'),
+    strip.text.x = element_text(size = 14),
+    strip.text.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 18),
+    plot.subtitle = element_text(hjust = 0.50, size = 14),
+  )
+
+remove_grid <- theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank()
+)
+
+education_labels <- c(
+  'Elementary school',
+  'Secondary school (GSCE)',
+  'Apprenticeship',
+  'Further education (A-level)',
+  'Special certificate*',
+  'Bachelor\'s',
+  'Master\'s',
+  'PhD'
+)
+
+income_labels <- c(
+  'No income', '< 250', '250 - 500', '500 - 1000',
+   '1000 - 1500', '1500 - 2000', '2000 - 2500',
+  '2500 - 3000',  '3000 - 3500', '3500 - 4000',
+  '> 4000', 'No answer'
+)
+
+income_labels <- c(
+  'No income', '< 250€', '250€ - < 500€', '500€ - < 1000€',
+   '1000€ - < 1500€', '1500€ - < 2000€', '2000€ - < 2500€',
+  '2500€ - < 3000€',  '3000€ - < 3500€', '3500€ - < 4000€',
+  '>= 4000€', 'No answer'
+)
+
+desc <- dat %>% 
+  select(gender, age, education, income) %>% 
+  pivot_longer(-gender, names_to = 'variable') %>% 
+  mutate(gender = ifelse(gender == 1, 'Female (n = 901)', 'Male (n = 406)'))
+
+
+desc_age <- filter(desc, variable == 'age')
+
+male_values <- desc_age[desc_age$gender == 'Male (n = 406)', ]$value
+female_values <- desc_age[desc_age$gender != 'Male (n = 406)', ]$value
+
+desc_age$age_rel <- sapply(seq(nrow(desc_age)), function(i) {
+  row <- desc_age[i, ]
+  is_male <- row$gender == 'Male (n = 406)'
+  ifelse(is_male, mean(row$value == male_values), mean(row$value == female_values))
+})
+
+p1 <- ggplot(unique(desc_age), aes(x = value, y = age_rel, fill = gender)) +
+  geom_bar(stat = 'identity', position = position_dodge(1), width = 1) +
+  scale_fill_manual('', values = cols) +
+  scale_x_continuous('Age', breaks = scales::pretty_breaks(n = 10)) +
+  ylab('Relative frequency') +
+  ggtitle('Age') +
+  custom_theme +
+  remove_grid
+
+plot_bar <- function(desc, variable, title, labels, colors = cols) {
+  d <- desc[desc$variable == variable, ]
+  
+  male_values <- d[d$gender == 'Male (n = 406)', ]$value
+  female_values <- d[d$gender != 'Male (n = 406)', ]$value
+  
+  d$rel <- sapply(seq(nrow(d)), function(i) {
+    row <- d[i, ]
+    is_male <- row$gender == 'Male (n = 406)'
+    ifelse(is_male, mean(row$value == male_values), mean(row$value == female_values))
+  })
+  
+  ggplot(unique(d), aes(x = value, y = rel, fill = gender)) +
+    # geom_bar(position = position_dodge(0.9)) +
+    geom_bar(stat = 'identity', position = position_dodge(1)) +#, width = 1) +
+    scale_fill_manual('', values = colors) +
+    scale_x_continuous('', labels = labels, breaks = seq(length(labels))) +
+    ylab('Relative frequency') +
+    ggtitle(title) +
+    custom_theme +
+    remove_grid +
+    coord_flip() +
+    guides(fill = FALSE)
+}
+
+p2 <- plot_bar(desc, 'education', 'Education', education_labels) + ylim(c(0, 0.30))
+p3 <- plot_bar(desc, 'income', 'Income', income_labels) + ylim(c(0, 0.18))
+
+# cairo_pdf('Figures/Demographics.pdf', width = 9, height = 8)
+grid.arrange(
+  p1, p2, p3,
+  layout_matrix = rbind(c(1, 1), c(2, 3))
+)
+# dev.off()
+```
+
+## Representativeness
+We now compare our sample to data from Statistik Austria (https://bit.ly/3qgYxsN; "Population 15 years and older by highest level of education completed by sex and age, 2019", Excel file), which provides data on all Austrians, to assess the representativeness of our sample in terms of age, gender, and education.
+
+Since our age variable is more fine-grained, we aggregate it to match Statistik Austria's reporting. Note that we did not ask for post-secondary non-tertiary or short tertiary education, which are included in Statistik Austria's reporting.
+
+```{r}
+library('readxl')
+
+datsa <- read_excel('Data/statistik-austria.xlsx', sheet = 2)
+
+datsa_long <- datsa %>%
+  pivot_longer(
+    !(gender | age_group | total),
+    names_to = 'education_group',
+    values_to = 'count'
+  ) %>%
+  select(-total) %>% 
+  mutate(
+    education_group = factor(education_group, levels = unique(education_group))
+  )
+```
+
+Here we compare the marginal distribution of age across the sexes in the Austrian general population to the sample distribution.
+```{r}
+create_age_groups <- function(dat) {
+  age_groups <- c('15 - 29', '30 - 49', '50 - 64', '65 - 84', '85 or older')
+  
+  dat[['age_group']] <- ifelse(
+    dat[['age']] <= 29, age_groups[1],
+    ifelse(
+      dat[['age']] <= 49, age_groups[2],
+      ifelse(
+        dat[['age']] <= 64, age_groups[3],
+        ifelse(
+          dat[['age']] <= 84, age_groups[4], age_groups[5]
+        )
+      )
+    )
+  )
+  
+  dat
+}
+
+demo <- select(dat, age, gender, income, education) %>% 
+  mutate(gender = ifelse(gender == 1, 'female', 'male'))
+
+demo <- create_age_groups(demo)
+
+
+# Statistik Austria data from https://bit.ly/3qgYxsN
+gender_age_SA <- datsa %>%
+  group_by(gender, age_group) %>%
+  summarize(total = total) %>% 
+  group_by(gender) %>% 
+  mutate(pop_prop = round(total / sum(total), 4)) %>% 
+  select(-total)
+
+gender_age_obs <- demo %>%
+  group_by(gender, age_group) %>%
+  summarize(total = n()) %>% 
+  group_by(gender) %>% 
+  mutate(obs_prop = round(total / sum(total), 4)) %>% 
+  select(-total)
+
+gender_age <- full_join(gender_age_SA, gender_age_obs)
+gender_age
+```
+
+Below we look at education across gender.
+
+```{r}
+create_education_groups <- function(dat) {
+  
+  education_groups <- c('primary', 'lower_secondary', 'upper_secondary', 'bachelor', 'master', 'doctorate')
+  
+  dat[['education_group']] <- ifelse(
+  dat[['education']] == 1, education_groups[1],
+    ifelse(
+      dat[['education']] == 2, education_groups[2],
+      ifelse(
+        dat[['education']] %in% c(3, 4, 5), education_groups[3],
+        ifelse(
+          dat[['education']] == 6, education_groups[4],
+          ifelse(
+            dat[['education']] == 7, education_groups[5], education_groups[6]
+          )
+        )
+      )
+    )
+  )
+  
+  dat[['education_group']] <- factor(
+    dat[['education_group']],
+    levels = c('primary', 'lower_secondary', 'upper_secondary', 'bachelor', 'master', 'doctorate')
+  )
+  dat
+}
+
+demo <- create_education_groups(demo)
+
+# Statistik Austria data from https://bit.ly/3qgYxsN
+gender_education_SA <- datsa_long %>%
+  group_by(gender, education_group) %>%
+  summarize(total = sum(count)) %>% 
+  group_by(gender) %>% 
+  mutate(
+    pop_prop = round(total / sum(total), 4),
+    education_group_coarse = ifelse(
+      education_group %in% c('lower_secondary_1', 'lower_secondary_2'),'lower_secondary',
+      ifelse(
+        education_group %in% c('upper_secondary_1', 'upper_secondary_2'),
+        'upper_secondary', as.character(education_group)
+      )
+    )
+  ) %>% 
+  select(-total, -education_group) %>% 
+  group_by(gender, education_group_coarse) %>% 
+  summarize(pop_prop = sum(pop_prop)) %>% 
+  mutate(
+    education_group = factor(
+      education_group_coarse,
+      levels = c(
+        'primary', 'lower_secondary', 'upper_secondary',
+        'post_secondary_non_tertiary', 'short_tertiary', 'bachelor', 'master', 'doctorate'
+      )
+    )
+  ) %>% 
+  select(gender, education_group, pop_prop) %>%
+  arrange(gender, education_group)
+
+gender_education_obs <- demo %>%
+  group_by(gender, education_group) %>%
+  summarize(total = n()) %>% 
+  group_by(gender) %>% 
+  mutate(obs_prop = round(total / sum(total), 4)) %>% 
+  select(-total)
+
+gender_education <- full_join(gender_education_SA, gender_education_obs)
+gender_education
+```
+
+Because we did not assess short tertiary education, and in fact some responses that we now coded as 'upper_secondary' education (e.g., certain types of 'Handelsakademien', depending on the length of the schooling) are actually short tertiary education, we merge short tertiary education (as well as post-secondary non-tertiary) into upper secondary education in the Statistik Austria data. This makes the survey weighting we do below possible, because it assumes no missing data. We stratify according to the joint distribution of gender, age, and education; we prepare this here.
+
+```{r}
+datsa$lower_secondary <- datsa$lower_secondary_1 + datsa$lower_secondary_2
+datsa$upper_secondary <- c(
+  datsa$upper_secondary_1 + datsa$upper_secondary_2 +
+  datsa$post_secondary_non_tertiary + datsa$short_tertiary
+)
+
+pop_joint <- datsa[, c(1, 2, 4, 14, 15, 11, 12, 13)]
+pop_joint <- pop_joint %>% 
+  pivot_longer(
+    !(gender | age_group),
+    names_to = 'education_group',
+    values_to = 'Freq'
+  ) %>% 
+  mutate(
+    gender = ifelse(gender == 'female', 1, 2),
+    education_group = factor(
+      education_group,
+      levels = c(
+        'primary', 'lower_secondary', 'upper_secondary', 'bachelor', 'master', 'doctorate')
+    )
+  )
+
+# Population joint distribution of gender, age, and education
+pop_joint
+```
+
+
+## TCM, Homeopathy, Accupuncture Use
+### Descriptives on all participants
+We first give descriptives for all participants (rather than only those who are familiar with TCM, see below). We remove participants who did not answer the relevant question, which results in 19 exclusions.
+
+```{r}
+dat_var_all <- dat %>% 
+  filter(
+    !is.na(disease), !is.na(tcm_known), !is.na(tcm_use),
+    !is.na(globuli_use), !is.na(globuli_pass), !is.na(needle_use)
+  )
+
+nrow(dat) - nrow(dat_var_all)
+```
+
+```{r, results = 'asis'}
+library('papaja')
+
+tab_use_all <- dat_var_all %>% 
+  group_by(gender) %>% 
+  summarize(
+    # disease_m = mean(disease == 1),
+    tcm_known_m = mean(tcm_known == 1),
+    tcm_use_m = mean(tcm_use == 1),
+    globuli_use_m = mean(globuli_use == 1),
+    globuli_pass_m = mean(globuli_pass == 1),
+    needle_use_m = mean(needle_use == 1),
+  ) %>% 
+  mutate_all(
+    round, 3
+  ) %>% 
+  mutate(
+    gender = ifelse(gender == 1, 'Female', 'Male')
+  )
+
+cnames <- c(
+  'gender', 'Knows TCM', 'Has used TCM', 'Has used Homeopathy',
+  'Has passed on Homeopathy', 'Has used Accupuncture'
+)
+colnames(tab_use_all) <- cnames
+
+apa_table(
+  tab_use_all, caption = 'Table 1. Summarizes TCM, Homeopathy, and Accupuncture use.',
+  digits = 3
+)
+```
+
+Below we give the descriptives weighted according to the Statistik Austria joint population distribution of gender, age, and education.
+
+```{r}
+library('survey')
+
+# Add 'age_group' and 'education_group' columns
+dat_var_all <- create_age_groups(dat_var_all)
+dat_var_all <- create_education_groups(dat_var_all)
+
+get_prop <- function(formula, weighting) {
+  tab <- svytable(formula, weighting, round = TRUE)
+  row <- (tab / rowSums(tab))[, 1]
+  round(as.numeric(row), 3)
+}
+
+# Create the survey design
+design <- svydesign(ids = ~1, data = dat_var_all, weights = NULL)
+ps <- postStratify(design, ~gender + age_group + education_group, pop_joint, partial = TRUE)
+
+tab_use_all_weighted <- data.frame(
+  'gender' = c('Female', 'Male'),
+  'Knows TCM' = get_prop(~gender + tcm_known, ps),
+  'Has used TCM' = get_prop(~gender + tcm_use, ps),
+  'Has used Homeopathy' = get_prop(~gender + globuli_use, ps),
+  'Has passed on Homeopathy' = get_prop(~gender + globuli_pass, ps),
+  'Has used Accupuncture' = get_prop(~gender + needle_use, ps)
+)
+colnames(tab_use_all_weighted) <- cnames
+
+apa_table(
+  tab_use_all_weighted,
+  caption = 'Table 1. Summarizes TCM, Homeopathy, and Accupuncture using survey weights.',
+  digits = 3
+)
+```
+
+
+### Descriptives on participants who know TCM
+Here we remove all participants who do not know any or either of TCM, homeopathy, or accupuncture. We also remove those who do not know the answer to the relevant questions (e.g., those that do not know how often they use TCM). This removes 232 participants.
+
+Since we have *tcm_money*, which indicates how much money they have spent on TCM, we do not include *tcm_moneyrel*, which indicates how much money relative to their other medical spending they have spent on TCM. *tcm_moneyrel* is also only available for people who took the online survey.
+
+```{r}
+dat_clean <- dat %>% 
+  select(-tcm_moneyrel) %>% 
+  filter(
+    # Remove people who don't know TCM or who don't know the answer
+    tcm_known != 2,
+    !(tcm_use %in% c(3, 4)),
+    !(tcm_frequency %in% c(6, 7)),
+    !(tcm_trust %in% c(6, 7)),
+    !(tcm_science %in% c(6, 7)),
+    !(tcm_money %in% c(8, 9)),
+    
+    # Remove people who don't know homeopathy or who don't know the answer
+    !(globuli_use %in% c(3, 4)),
+    !(globuli_pass %in% c(3, 4)),
+    
+    # Remove people who don't know accupuncture or who don't know the answer
+    !(needle_use %in% c(3, 4)),
+    !(needle_frequency %in% c(6, 7))
+  )
+
+nrow(dat) - nrow(dat_clean)
+```
+
+We recode the variables so that an increase in number is associated with an increase in whatever the variable measures (e.g., money or agreement). We also recode binary variables so that 0 indicates absence or negation. We also remove those participants who had a NA in any of their answers, because otherwise the proportions in the descriptives table refer to different population sizes. This excludes 13 participants. (Note that there were no NAs in *education*, *income*, or *med_money*; these variables will be used later.)
+
+```{r}
+dat_var <- dat_clean %>% 
+  select(
+    gender, age, disease, starts_with('tcm'),
+    starts_with('globuli'), starts_with('vax'),
+    starts_with('needle'), income, education, med_money
+  ) %>% 
+  drop_na() %>% # removes 13 people
+  mutate(
+    # tcm_trust, tcm_science, vax_use, vax_fresh need to be
+    # reverse coded so that larger means stronger agreement
+    tcm_trust = 6 - tcm_trust,
+    tcm_science = 6 - tcm_science,
+    vax_use = 6 - vax_use,
+    vax_fresh = 6 - vax_fresh,
+    
+    # binary indicators need to be recoded so that 1 means yes
+    disease = 3 - disease,
+    tcm_known = 3 - tcm_known,
+    tcm_use = 3 - tcm_use,
+    globuli_use = 3 - globuli_use,
+    globuli_pass = 3 - globuli_pass,
+    needle_use = 3 - needle_use
+  )
+
+# Recode variables to start at 0, not at 1 (except age)
+dat_var <- as_tibble(dat_var - 1) %>%  mutate(age = age + 1)
+nrow(dat_clean) - nrow(dat_var)
+```
+
+The table below shows the proportion of men and women who know TCM, have used TCM, have used homeopathy, passed on homeopathy to others, or have used accupuncture in the last three years.
+
+```{r, results = 'asis'}
+tab_use <- dat_var %>% 
+  group_by(gender) %>% 
+  summarize(
+    tcm_known_m = mean(tcm_known == 1),
+    tcm_use_m = mean(tcm_use == 1),
+    globuli_use_m = mean(globuli_use == 1),
+    globuli_pass_m = mean(globuli_pass == 1),
+    needle_use_m = mean(needle_use == 1),
+  ) %>% 
+  mutate_all(
+    round, 3
+  ) %>% 
+  mutate(
+    gender = ifelse(gender == 0, 'Female', 'Male')
+  )
+
+colnames(tab_use) <- c(
+  'Gender', 'Knows TCM', 'Has used TCM', 'Has used Homeopathy',
+  'Has passed on Homeopathy', 'Has used Accupuncture'
+)
+
+apa_table(
+  tab_use, caption = 'Table 1. Summarizes TCM, Homeopathy, and Accupuncture use.',
+  digits = 3
+)
+```
+
+We again present the descriptive statistics using the same survey weighting procedure as above.
+
+```{r}
+# Add 'age_group' and 'education_group' columns
+dat_var <- create_age_groups(dat_var)
+dat_var <- create_education_groups(dat_var)
+
+# Adjust 'gender' in population joint distribution (0-1 coding instead of 1-2 coding)
+pop_joint$gender <- pop_joint$gender - 1
+
+# Create the survey design
+design <- svydesign(ids = ~1, data = dat_var, weights = NULL)
+ps <- postStratify(design, ~gender + age_group + education_group, pop_joint, partial = TRUE)
+
+# Since we recoded the variables above, we need to adjust this function
+# The value '1' now indicates use / knowledge
+get_prop <- function(formula, weighting) {
+  tab <- svytable(formula, weighting, round = TRUE)
+  
+  if (ncol(tab) == 1) {
+    row <- (tab / rowSums(tab))[, 1]
+  } else {
+    row <- (tab / rowSums(tab))[, 2]
+  }
+  
+  round(as.numeric(row), 3)
+}
+
+tab_use_weighted <- data.frame(
+  'gender' = c('Female', 'Male'),
+  'Knows TCM' = get_prop(~gender + tcm_known, ps),
+  'Has used TCM' = get_prop(~gender + tcm_use, ps),
+  'Has used Homeopathy' = get_prop(~gender + globuli_use, ps),
+  'Has passed on Homeopathy' = get_prop(~gender + globuli_pass, ps),
+  'Has used Accupuncture' = get_prop(~gender + needle_use, ps)
+)
+colnames(tab_use_weighted) <- cnames
+
+apa_table(
+  tab_use_weighted,
+  caption = 'Table 1. Summarizes TCM, Homeopathy, and Accupuncture using survey weights.',
+  digits = 3
+)
+```
+
+
+## TCM and Accupuncture Frequency
+The table below shows how often men and women have used TCM in the last three years.
+
+```{r}
+create_table <- function(dat, var, colname, labels) {
+  tab <- table(dat$gender, dat[[var]], dnn = c('Gender', colname))
+  rownames(tab) <- c('Female', 'Male')
+  colnames(tab) <- labels
+  
+  # Normalize across columns
+  tab <- t(apply(tab, 1, function(x) round(x / sum(x), 3)))
+  tab
+}
+
+frequency_labels <- c(
+  '0', '1 - <5', '5 - <10', '10 - <20', '>= 20'
+)
+
+tab_tcm <- create_table(dat_var, 'tcm_frequency', 'Frequency of TCM Use', frequency_labels)
+apa_table(
+  tab_tcm, caption = 'Table 2. Summarizes Frequency of TCM use in the last 3 years.',
+  digits = 3
+)
+```
+
+We again present the weighted results.
+
+```{r}
+create_weighted_table <- function(formula, weighting, cnames) {
+  
+  tab <- svytable(formula, weighting, round = TRUE)
+  tab <- round(tab / rowSums(tab), 3)
+  
+  rownames(tab) <- c('Female', 'Male')
+  colnames(tab) <- cnames
+  class(tab) <- c('matrix', 'array')
+  tab
+}
+
+tab_tcm_weighted <- create_weighted_table(~gender + tcm_frequency, ps, frequency_labels)
+apa_table(
+  tab_tcm_weighted, caption = 'Table 2. Summarizes Frequency of TCM use in the last 3 years using survey weights.',
+  digits = 3
+)
+```
+
+The table below shows how often men and women have used accupuncture in the last three years.
+
+```{r}
+tab_needle <- create_table(
+  dat_var, 'needle_frequency', 'Frequency of Accupuncture Use',
+  frequency_labels
+)
+
+apa_table(
+  tab_needle, caption = 'Table 3. Summarizes Accupuncture use in the last 3 years.',
+  digits = 3
+)
+```
+
+We again present the weighted results.
+
+```{r}
+tab_needle_weighted <- create_weighted_table(~gender + needle_frequency, ps, frequency_labels)
+apa_table(
+  tab_needle_weighted,
+  caption = 'Table 3. Summarizes Accupuncture use in the last 3 years using survey weights.',
+  digits = 3
+)
+```
+
+
+## Trust in TCM and Science of TCM
+The table below shows the trust in doctors with TCM training across the genders.
+
+```{r}
+agree_labels <- c(
+   'Do not Agree', 'Rather Disagree',
+   'Partly Agree', 'Mostly Agree', 'Completely Agree'
+)
+
+tab_trust <- create_table(
+  dat_var, 'tcm_trust', 'Trust in Doctors with TCM training',
+  agree_labels
+)
+
+apa_table(
+  tab_trust, caption = 'Table 6. Summarizes Trust in doctors with TCM training.',
+  digits = 3
+)
+```
+
+We again present the weighted results.
+
+```{r}
+tab_trust_weighted <- create_weighted_table(~gender + tcm_trust, ps, agree_labels)
+apa_table(
+  tab_trust_weighted, caption = 'Table 6. Summarizes Trust in doctors with TCM training using survey weights.',
+  digits = 3
+)
+```
+
+The table below shows the strength with which people believe / agree that TCM is scientific across the genders.
+
+```{r}
+tab_science <- create_table(
+  dat_var, 'tcm_science', 'Believes TCM to be scientific',
+  agree_labels
+)
+
+apa_table(
+  tab_science, caption = 'Table 7. Summarizes the agreement with TCM being scientific.',
+  digits = 3
+)
+```
+
+We again present the weighted results.
+
+```{r}
+tab_science_weighted <- create_weighted_table(~gender + tcm_science, ps, agree_labels)
+apa_table(
+  tab_science_weighted, caption = 'Table 7. Summarizes the agreement with TCM being scientific using survey weights.',
+  digits = 3
+)
+```
+
+
+## TCM and Medical Expenses
+We remove participants who did not know there medical expenses. This removes 34 participants. The table below shows medical expenses across the genders.
+
+```{r}
+dat_varm <- filter(dat_var, med_money != 7)
+nrow(dat_var) - nrow(dat_varm)
+```
+
+```{r}
+money_labels <- c(
+  '0', '1 - <100', '100 - <250', '250 - <500',
+  '500 - <750', '750 - <1000', '>= 1000'
+)
+
+tab_med <- create_table(dat_varm, 'med_money', 'Medical Expenses', money_labels)
+apa_table(tab_med, caption = 'Table 4. Summarizes Medical expenses in the last 3 years.', digits = 3)
+```
+
+We again present the weighted results.
+
+```{r}
+# Create the survey design with new data
+design <- svydesign(ids = ~1, data = dat_varm, weights = NULL)
+ps <- postStratify(design, ~gender + age_group + education_group, pop_joint, partial = TRUE)
+
+tab_med_weighted <- create_weighted_table(~gender + med_money, ps, money_labels)
+apa_table(
+  tab_med_weighted, caption = 'Table 4. Summarizes Medical expenses in the last 3 years using survey weights.',
+  digits = 3
+)
+```
+
+The table below shows TCM expenses across the genders.
+
+```{r}
+tab_tcm <- create_table(dat_var, 'tcm_money', 'TCM Expenses', money_labels)
+apa_table(tab_tcm, caption = 'Table 5. Summarizes TCM expenses in the last 3 years.', digits = 3)
+```
+
+We again present the weighted results.
+
+```{r}
+tab_tcm_weighted <- create_weighted_table(~gender + tcm_money, ps, money_labels)
+apa_table(
+  tab_tcm_weighted, caption = 'Table 5. Summarizes TCM expenses in the last 3 years using survey weights.',
+  digits = 3
+)
+```
+
+
+# Statistical Analysis
+## Preprocessing
+Since we analyze data from participants who all know TCM, we remove the variable *tcm_known* from the dataframe.
+```{r}
+table(dat_var$tcm_known) # all participants know TCM
+dat_stat <- select(dat_var, -tcm_known)
+
+dim(dat_stat)
+```
+
+This data holds 1062 participants, 156 of which wished to not report their income group.
+
+```{r}
+table(dat_stat$income) # 11 means not reported
+```
+
+Similarly, 34 people did not know their medical expenses.
+
+```{r}
+table(dat_stat$med_money) # 7 means not reported
+```
+
+We recode these to be NA and will impute these data later.
+
+```{r}
+dat_stat <- dat_stat %>% 
+  mutate(
+    income = ifelse(income == 11, NA, income), # 11 is NA
+    med_money = ifelse(med_money == 7, NA, med_money) # 7 is NA
+  ) %>% 
+  # re-order columns for later
+  dplyr::select(
+    gender, age, income, education, med_money, disease,
+    tcm_use, tcm_frequency, tcm_science, tcm_trust, tcm_money,
+    globuli_use, globuli_pass, vax_use, vax_fresh, needle_use, needle_frequency
+  )
+
+sum(is.na(dat_stat$income)) # 156 reported no income
+sum(is.na(dat_stat$med_money)) # 34 reported no medical expenses
+```
+
+The *use* variables do not add more information than the *frequency* variables, and so we remove them from subsequent analysis.
+
+```{r}
+with(dat_stat, table(needle_use, needle_frequency))
+with(dat_stat, table(tcm_use, tcm_frequency))
+```
+
+```{r}
+dat_stat <- dplyr::select(dat_stat, -needle_use, -tcm_use)
+```
+
+## Bayesian Gaussian Copula Graphical Model
+We use a Bayesian Gaussian copula graphical model to explore the multivariate dependencies in our data. Most of our variables are ordinal and binary, except for age, which we treat as continuous. We use a Gaussian copula graphical model which allows us to model each variable on its proper domain. This is implemented in the R package *BGGM* (Williams & Mulder, [2020](https://www.sciencedirect.com/science/article/abs/pii/S0022249620300821)).
+
+```{r}
+apply(dat_stat, 2, function(x) length(unique(x)))
+```
+
+```{r}
+library('BGGM')
+library('qgraph')
+library('ggplot2')
+library('RColorBrewer')
+
+# Grouped into A, B, C, D, E groups (see below)
+node_names <- c(
+  'Gender', 'Age', 'Income', 'Education', 'Medical expenses', 'Chronic disease',
+  'TCM usage frequency', 'Perception of scientific support', 'Trust in TCM-certified MDs',
+  'TCM expenses', 'Homeopathy usage', 'Homeopathy propagation', 'Vaccination usage',
+  'Booster vaccination', 'Acupuncture usage frequency'
+)
+  
+plot_graph <- function(mat, errors, node_names, main = NULL, legend = TRUE, ...) {
+  # Groups: Individual variables, TCM, Homeopathy, Vaccination, Accupuncture
+  cols <- brewer.pal(5, 'Set3')
+  
+  groups <- c(
+    rep('A. Individual variables', 6),
+    rep('B. TCM', 4),
+    rep('C. Homeopathy', 2),
+    rep('D. Vaccination', 2),
+    rep('E. Acupuncture', 1)
+  )
+  
+  qgraph(
+    # mat, edge.color = ifelse(mat < 0, cols[4], cols[5]),
+    mat, edge.color = ifelse(mat < 0, 'darkred', 'darkblue'),
+    pie = errors,
+    layout = 'circle',
+    pieColor = 'skyblue',
+    color = cols,
+    groups = groups,
+    nodeNames = node_names,
+    legend.mode = 'style1',
+    legend = legend, ...
+  )
+  
+  if (!is.null(main)) {
+    title(main, font.main = 1, line = 2.8, cex.main = 1.8)
+  }
+}
+```
+
+We impute the missing data using *mice*.
+
+```{r}
+library('mice')
+
+dat_c <- mice(dat_stat, m = 10, printFlag = FALSE)
+dat_c <- complete(dat_c)
+```
+
+We present two analyses: one with and one without post-stratification.
+
+### Without post-stratification
+We first present the analysis without post-stratification. We visualize the network below. Note that relations between nodes represent partial correlations.
+
+```{r}
+if (!file.exists('fitted-bggm.RDS')) {
+  m <- estimate(dat_c, iter = 4000, type = 'mixed', analytic = FALSE, impute = FALSE)
+  pred <- predictability(m, iter = 1000)
+  saveRDS(list('pred' = pred, 'm' = m), 'fitted-bggm.RDS')
+} else {
+  obj <- readRDS('fitted-bggm.RDS')
+  m <- obj$m
+  pred <- obj$pred
+}
+
+mat <- m$pcor_mat
+errors <- sapply(pred$scores, mean)
+
+# pdf('Figures/Bayesian-pcor.pdf', width = 6, height = 6)
+plot_graph(
+  mat, errors, node_names,
+  main = 'Partial correlation network', legend.cex = 0.50, legend = F
+)
+# dev.off()
+```
+
+We visualize the correlation network below.
+
+```{r}
+library('corpcor')
+
+diag(mat) <- 1
+mat_cor <- pcor2cor(mat)
+
+# pdf('Figures/Bayesian-cor2.pdf', width = 10, height = 8)
+plot_graph(
+  mat_cor, errors, node_names,
+  main = 'Correlation network', legend.cex = 0.50, legend = T
+)
+# dev.off()
+```
+
+We visualize the partial correlations between all variables below.
+
+```{r}
+mapping <- list()
+for (i in seq(length(node_names))) {
+  mapping[colnames(dat_c)[i]] <- i
+}
+
+convert <- function(s) {
+  terms <- strsplit(s, '--')[[1]]
+  paste0(mapping[[terms[1]]], '-', mapping[[terms[2]]])
+}
+
+ss <- summary(m)
+ds <- ss$dat_results
+ds$Relation <- sapply(ss$dat_results$Relation, convert)
+ds$Relation <- reorder(ds$Relation, ds$Post.mean)
+
+# pdf('Figures/Partial-Correlations.pdf', width = 10, height = 5)
+ggplot(ds, aes(x = Relation, y = Post.mean)) +
+  geom_hline(aes(yintercept = 0), color = 'gray76') +
+  geom_errorbar(aes(ymin = Cred.lb, ymax = Cred.ub), cex = 0.50) +
+  geom_point(size = 0.75) +
+  scale_y_continuous(limits = c(-1, 1), breaks = seq(-1, 1, 0.50)) +
+  xlab('Pairs of nodes') +
+  ylab('Partial correlation') +
+  ggtitle('Partial correlations between all variables') +
+  custom_theme +
+  theme(axis.text.x = element_text(angle = 90, size = 6))
+# dev.off()
+```
+
+
+Below the point estimates and confidence intervals.
+
+```{r}
+ss
+```
+
+We visualize how much variance is explained for each variable by all variables combined.
+
+```{r}
+library('latex2exp')
+
+colnames(pred$Y) <- node_names
+
+# pdf('Figures/Variance-Expained.pdf', width = 8, height = 5)
+plot(pred, type = 'ridgeline') +
+  xlab(TeX('Bayesian $$R^2$$')) +
+  ggtitle('Variance explained') +
+  ylab('') +
+  guides(fill = FALSE) +
+  scale_x_continuous(limits = c(0, 0.80), breaks = seq(0, 0.80, .2)) +
+  custom_theme +
+  theme(axis.text.x = element_text(angle = 0))
+# dev.off()
+```
+
+Below are the posterior means and posterior standard deviations.
+
+```{r}
+pred
+```
+
+### With post-stratification
+BGGM does not yet support post-stratification in the estimation procedure. We therefore draw $n$ observations from the data with replacement according to the weights defined by the population distribution of age, gender, and education, and estimate the model each time. This creates post-stratified estimates.
+
+```{r}
+dat_ps <- create_education_groups(create_age_groups(dat_c))
+dat_ps <- left_join(dat_ps, pop_joint) 
+
+design2 <- svydesign(ids = ~1, data = dat_ps, weights = NULL)
+ps2 <- postStratify(design2, ~gender + age_group + education_group, pop_joint, partial = TRUE)
+dat_ps$weights <- weights(ps2)
+
+
+if (!file.exists('fitted-bggm-ps.RDS')) {
+  
+  library('doParallel')
+  registerDoParallel(cores = 6)
+  
+  times <- 250
+  res <- foreach(i = seq(times), .combine = 'rbind') %dopar% {
+    d <- slice_sample(dat_ps, n = nrow(dat_ps), replace = TRUE, weight_by = weights)
+    d <- dplyr::select(d, -age_group, -education_group, -Freq, -weights)
+    
+    m <- estimate(d, iter = 2000, type = 'mixed', analytic = FALSE, impute = FALSE)
+    pred <- predictability(m, iter = 1000)
+    
+    list('m' = m, 'pred' = pred)
+  }
+  
+  saveRDS(res, 'fitted-bggm-ps.RDS')
+  
+} else {
+  
+  res <- readRDS('fitted-bggm-ps.RDS')
+  
+}
+```
+
+We combine the estimates and visualize the partial correlation network below.
+
+```{r}
+library('abind')
+
+pcor_post <- lapply(seq(nrow(res)), function(i) {
+  x <- res[i, ]
+  x$m$post_samp$pcors
+})
+
+errors_post <- lapply(seq(nrow(res)), function(i) {
+  x <- res[i, ]
+  do.call('cbind', x$pred$scores)
+})
+
+pcor_post <- abind(pcor_post)
+errors_post <- do.call('rbind', errors_post)
+
+mat_ps <- apply(pcor_post, c(1, 2), mean)
+errors_ps <- apply(errors_post, 2, mean)
+
+# pdf('Figures/Bayesian-pcor-ps.pdf', width = 6, height = 6)
+plot_graph(
+  mat_ps, errors_ps, node_names,
+  main = 'Partial correlation network (post-stratified)', legend.cex = 0.50, legend = F
+)
+# dev.off()
+```
+
+We visualize the correlation network below.
+
+```{r}
+mat_ps2 <- mat_ps
+diag(mat_ps2) <- 1
+mat_cor_ps <- pcor2cor(mat_ps2)
+
+# pdf('Figures/Bayesian-cor2-ps.pdf', width = 10, height = 8)
+plot_graph(
+  mat_cor_ps, errors_ps, node_names,
+  main = 'Correlation network (post-stratified)', legend.cex = 0.50, legend = TRUE
+)
+# dev.off()
+```
+
+We visualize the partial correlations between all variables below.
+
+```{r}
+ms_ps <- res[1, ]$m
+ms_ps$pcor_mat <- mat_ps
+ms_ps$post_samp$pcors <- pcor_post
+ms_ps$iter <- dim(pcor_post)[3] - (50 * 150)
+# ms_ps$post_samp$fisher_z <- fisher_r_to_z(pcor_post)
+
+ss_ps <- summary(ms_ps)
+ds_ps <- ss_ps$dat_results
+ds_ps$Relation <- sapply(ss_ps$dat_results$Relation, convert)
+ds_ps$Relation <- reorder(ds_ps$Relation, ds_ps$Post.mean)
+
+# pdf('Figures/Partial-Correlations-ps.pdf', width = 10, height = 5)
+ggplot(ds_ps, aes(x = Relation, y = Post.mean)) +
+  geom_hline(aes(yintercept = 0), color = 'gray76') +
+  geom_errorbar(aes(ymin = Cred.lb, ymax = Cred.ub), cex = 0.50) +
+  geom_point(size = 0.75) +
+  scale_y_continuous(limits = c(-1, 1), breaks = seq(-1, 1, 0.50)) +
+  xlab('Pairs of nodes') +
+  ylab('Partial correlation') +
+  ggtitle('Partial correlations between all variables (post-stratified)') +
+  custom_theme +
+  theme(axis.text.x = element_text(angle = 90, size = 6))
+# dev.off()
+```
+
+Below the point estimates and confidence intervals.
+
+```{r}
+ss_ps
+```
+
+
+We visualize how much variance is explained for each variable by all variables combined.
+
+```{r}
+pred <- res[1, ]$pred
+
+errors_post2 <- lapply(seq(15), function(i) {
+  preds <- res[, 2]
+  variable <- lapply(preds, function(x) x$scores[[i]])
+  do.call('c', variable)
+})
+
+pred$scores <- errors_post2
+colnames(pred$Y) <- node_names
+
+# pdf('Figures/Variance-Expained-ps.pdf', width = 8, height = 5)
+plot(pred, type = 'ridgeline') +
+  xlab(TeX('Bayesian $$R^2$$')) +
+  ggtitle('Variance explained (post-stratified)') +
+  ylab('') +
+  guides(fill = FALSE) +
+  scale_x_continuous(limits = c(0, 0.80), breaks = seq(0, 0.80, .2)) +
+  custom_theme +
+  theme(axis.text.x = element_text(angle = 0))
+# dev.off()
+```
+
+Below are the posterior means and posterior standard deviations.
+
+```{r}
+pred
+```

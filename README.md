@@ -1,0 +1,2 @@
+# TCM Analysis
+This is the online supplementary to the paper "Traditional Chinese Medicine: A Bayesian network model of public awareness, usage determinants, and perception of scientific support in Austria" by Eigenschink, Bellach, Leonard, Dablander, Maier, Dablander, and Sitte. It includes the code and data to fully reproduce the results.
